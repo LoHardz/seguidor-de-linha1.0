@@ -1,0 +1,276 @@
+// =======================
+// PINOS DOS MOTORES
+// =======================
+const int IN1 = 4;
+const int IN2 = 7;
+const int IN3 = 8;
+const int IN4 = 12;
+
+const int ENA = 5; // motor direito
+const int ENB = 6; // motor esquerdo
+
+// =======================
+// SENSORES DE LINHA
+// Ordem física: esquerda extrema, esquerda, meio, direita, direita extrema
+// =======================
+const int IRL2  = A0;
+const int IRL1  = A1;
+const int IRMID = A2;
+const int IRR1  = A3;
+const int IRR2  = A4;
+
+const int IRBACK = 3;
+
+// Botão de start
+const int START_BUTTON = 2;
+
+// =======================
+// CONFIGURAÇÕES
+// =======================
+const int SENSOR_ATIVO = LOW;
+
+// Velocidades versão RÁPIDA 3
+int straightSpeed    = 215; // reta
+int slightCurveSpeed = 180; // curva leve
+int hardCurveSpeed   = 145; // curva forte
+int maxSpeed         = 255; // limite máximo
+int searchSpeed      = 145; // busca quando perde linha
+
+// PID ajustado para mais velocidade
+float Kp = 34.0;
+float Ki = 0.0;
+float Kd = 72.0;
+
+// Boost para curva forte
+int curveBoost = 75;
+
+// Sensor traseiro
+unsigned long startTime = 0;
+unsigned long delayIRBack = 19000;
+
+bool paradoPeloSensorBack = false;
+bool roboLiberado = false;
+
+// Variáveis do PID
+float erro = 0;
+float erroAnterior = 0;
+float integral = 0;
+float ultimoErroValido = 0;
+
+// Filtro para suavizar a leitura
+float erroFiltrado = 0;
+
+// Pesos dos sensores
+// esquerda negativa, direita positiva
+float pesos[5] = {-2, -1, 0, 1, 2};
+
+// Ordem dos sensores
+int sensores[5] = {IRL2, IRL1, IRMID, IRR1, IRR2};
+
+void setup() {
+  // Motores
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+
+  // Sensores
+  pinMode(IRMID, INPUT);
+  pinMode(IRL1, INPUT);
+  pinMode(IRL2, INPUT);
+  pinMode(IRR1, INPUT);
+  pinMode(IRR2, INPUT);
+  pinMode(IRBACK, INPUT);
+
+  // Botão com resistor interno
+  pinMode(START_BUTTON, INPUT_PULLUP);
+
+  stopMotors();
+
+  // Espera apertar o botão
+  while (digitalRead(START_BUTTON) == HIGH) {
+    stopMotors();
+  }
+
+  // Espera 3 segundos antes de largar
+  delay(3000);
+
+  startTime = millis();
+  roboLiberado = true;
+}
+
+void loop() {
+  if (!roboLiberado) {
+    stopMotors();
+    return;
+  }
+
+  if (paradoPeloSensorBack) {
+    stopMotors();
+    return;
+  }
+
+  int BACK = digitalRead(IRBACK);
+
+  // Sensor traseiro só ativa depois do tempo definido
+  if (millis() - startTime >= delayIRBack) {
+    if (BACK == SENSOR_ATIVO) {
+      stopMotors();
+      paradoPeloSensorBack = true;
+      return;
+    }
+  }
+
+  bool linhaEncontrada = false;
+  erro = lerErroLinha(linhaEncontrada);
+
+  if (linhaEncontrada) {
+    aplicarPID();
+  } else {
+    procurarLinha();
+  }
+
+  delay(6);
+}
+
+// =======================
+// LEITURA DA LINHA
+// =======================
+float lerErroLinha(bool &linhaEncontrada) {
+  float somaPesos = 0;
+  int sensoresAtivos = 0;
+
+  for (int i = 0; i < 5; i++) {
+    if (digitalRead(sensores[i]) == SENSOR_ATIVO) {
+      somaPesos += pesos[i];
+      sensoresAtivos++;
+    }
+  }
+
+  if (sensoresAtivos > 0) {
+    linhaEncontrada = true;
+
+    float posicao = somaPesos / sensoresAtivos;
+    ultimoErroValido = posicao;
+
+    return posicao;
+  } else {
+    linhaEncontrada = false;
+    return ultimoErroValido;
+  }
+}
+
+// =======================
+// PID RÁPIDO 3
+// =======================
+void aplicarPID() {
+  // Filtro equilibrado: ainda suave, mas responde rápido
+  erroFiltrado = (erroFiltrado * 0.55) + (erro * 0.45);
+
+  float erroUsado = erroFiltrado;
+
+  // Zona morta pequena para reduzir samba na reta
+  if (erroUsado > -0.10 && erroUsado < 0.10) {
+    erroUsado = 0;
+  }
+
+  float erroAbs = erroUsado;
+  if (erroAbs < 0) {
+    erroAbs = -erroAbs;
+  }
+
+  integral += erroUsado;
+  integral = constrain(integral, -18, 18);
+
+  float derivativo = erroUsado - erroAnterior;
+
+  float correcao = (Kp * erroUsado) + (Ki * integral) + (Kd * derivativo);
+
+  erroAnterior = erroUsado;
+
+  int velocidadeBase;
+
+  if (erroAbs < 0.32) {
+    // Reta mais rápida
+    velocidadeBase = straightSpeed;
+    correcao = correcao * 0.50;
+  } 
+  else if (erroAbs < 1.10) {
+    // Curva leve
+    velocidadeBase = slightCurveSpeed;
+  } 
+  else {
+    // Curva forte
+    velocidadeBase = hardCurveSpeed;
+
+    if (erroUsado > 0) {
+      correcao += curveBoost;
+    } else {
+      correcao -= curveBoost;
+    }
+  }
+
+  // Linha na direita = erro positivo
+  // motor esquerdo acelera, motor direito reduz
+  int motorEsq = velocidadeBase + correcao;
+  int motorDir = velocidadeBase - correcao;
+
+  motorEsq = constrain(motorEsq, 0, maxSpeed);
+  motorDir = constrain(motorDir, 0, maxSpeed);
+
+  setMotors(motorEsq, motorDir);
+}
+
+// =======================
+// BUSCA QUANDO PERDE A LINHA
+// =======================
+void procurarLinha() {
+  integral = 0;
+
+  if (ultimoErroValido > 0) {
+    // linha estava para a direita
+    setMotors(searchSpeed, 0);
+  } 
+  else if (ultimoErroValido < 0) {
+    // linha estava para a esquerda
+    setMotors(0, searchSpeed);
+  } 
+  else {
+    // se não sabe para onde ir, procura para direita
+    setMotors(searchSpeed, 0);
+  }
+}
+
+// =======================
+// CONTROLE DOS MOTORES
+// =======================
+void setMotors(int velEsq, int velDir) {
+  // Canal A / ENA = motor direito
+  // Canal B / ENB = motor esquerdo
+
+  // Motor direito para frente
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  // Motor esquerdo para frente
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+  analogWrite(ENA, velDir); // direita
+  analogWrite(ENB, velEsq); // esquerda
+}
+
+// =======================
+// PARAR MOTORES
+// =======================
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+}
