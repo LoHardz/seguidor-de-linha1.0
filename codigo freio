@@ -50,8 +50,13 @@ int curveBoost = 45;
 // =======================
 unsigned long startTime = 0;
 
-// Ativa sensor traseiro depois de 19 segundos
+// Sensor traseiro só começa a valer
+// 19 segundos depois da largada
 unsigned long delayIRBack = 19000;
+
+// Tempo entre detectar a linha final
+// e realmente aplicar o freio
+unsigned long delayParada = 300;
 
 bool paradoPeloSensorBack = false;
 bool roboLiberado = false;
@@ -66,9 +71,15 @@ float ultimoErroValido = 0;
 
 // Pesos dos sensores
 // esquerda negativa / direita positiva
-float pesos[5] = {-2, -1, 0, 1, 2};
+float pesos[5] = {
+  -2,
+  -1,
+   0,
+   1,
+   2
+};
 
-// Ordem física dos sensores
+// Ordem dos sensores
 int sensores[5] = {
   IRL2,
   IRL1,
@@ -83,7 +94,9 @@ int sensores[5] = {
 // =====================================================
 void setup() {
 
+  // -----------------------
   // Motores
+  // -----------------------
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
@@ -92,29 +105,42 @@ void setup() {
   pinMode(ENA, OUTPUT);
   pinMode(ENB, OUTPUT);
 
+  // -----------------------
   // Sensores
+  // -----------------------
   pinMode(IRMID, INPUT);
   pinMode(IRL1, INPUT);
   pinMode(IRL2, INPUT);
   pinMode(IRR1, INPUT);
   pinMode(IRR2, INPUT);
+
   pinMode(IRBACK, INPUT);
 
+  // -----------------------
   // Botão
+  // -----------------------
   pinMode(START_BUTTON, INPUT_PULLUP);
 
+  // Garante que começa parado
   stopMotors();
+
 
   // =======================
   // ESPERA APERTAR START
   // =======================
   while (digitalRead(START_BUTTON) == HIGH) {
+
     stopMotors();
   }
 
-  // Espera 3 segundos
+
+  // =======================
+  // DELAY DE LARGADA
+  // =======================
   delay(3000);
 
+
+  // Marca o momento real da largada
   startTime = millis();
 
   roboLiberado = true;
@@ -126,17 +152,25 @@ void setup() {
 // =====================================================
 void loop() {
 
+  // =======================
+  // SEGURANÇA
+  // =======================
   if (!roboLiberado) {
+
     stopMotors();
+
     return;
   }
 
+
   // =======================
-  // ROBÔ JÁ FOI PARADO
-  // Mantém freio aplicado
+  // JÁ PAROU NA LINHA FINAL
   // =======================
   if (paradoPeloSensorBack) {
+
+    // Mantém freio motor aplicado
     brakeMotors();
+
     return;
   }
 
@@ -146,14 +180,28 @@ void loop() {
   // =======================
   int BACK = digitalRead(IRBACK);
 
-  // Só verifica depois de 19 segundos
+
+  // Só começa a verificar o sensor
+  // depois de 19 segundos
   if (millis() - startTime >= delayIRBack) {
 
     if (BACK == SENSOR_ATIVO) {
 
-      // FREIA IMEDIATAMENTE
+      // =====================================
+      // LINHA FINAL DETECTADA
+      // =====================================
+
+      // Continua com o último comando
+      // dos motores durante 500 ms
+      delay(delayParada);
+
+
+      // Depois dos 500 ms
+      // aplica o freio motor
       brakeMotors();
 
+
+      // Trava o estado como parado
       paradoPeloSensorBack = true;
 
       return;
@@ -162,18 +210,23 @@ void loop() {
 
 
   // =======================
-  // LEITURA DA LINHA
+  // CONTROLE DE LINHA
   // =======================
   bool linhaEncontrada = false;
 
   erro = lerErroLinha(linhaEncontrada);
 
+
   if (linhaEncontrada) {
+
     aplicarPID();
   }
+
   else {
+
     procurarLinha();
   }
+
 
   delay(10);
 }
@@ -185,32 +238,48 @@ void loop() {
 float lerErroLinha(bool &linhaEncontrada) {
 
   float somaPesos = 0;
+
   int sensoresAtivos = 0;
 
+
+  // Percorre os 5 sensores
   for (int i = 0; i < 5; i++) {
 
     if (digitalRead(sensores[i]) == SENSOR_ATIVO) {
 
       somaPesos += pesos[i];
+
       sensoresAtivos++;
     }
   }
 
 
+  // =======================
+  // LINHA ENCONTRADA
+  // =======================
   if (sensoresAtivos > 0) {
 
     linhaEncontrada = true;
 
-    float posicao = somaPesos / sensoresAtivos;
+
+    float posicao =
+      somaPesos / sensoresAtivos;
+
 
     ultimoErroValido = posicao;
+
 
     return posicao;
   }
 
+
+  // =======================
+  // LINHA PERDIDA
+  // =======================
   else {
 
     linhaEncontrada = false;
+
 
     return ultimoErroValido;
   }
@@ -222,14 +291,34 @@ float lerErroLinha(bool &linhaEncontrada) {
 // =====================================================
 void aplicarPID() {
 
+  // -----------------------
+  // Proporcional
+  // -----------------------
   float proporcional = erro;
 
+
+  // -----------------------
+  // Integral
+  // -----------------------
   integral += erro;
-  integral = constrain(integral, -30, 30);
 
-  float derivativo = erro - erroAnterior;
+  integral = constrain(
+    integral,
+    -30,
+    30
+  );
 
 
+  // -----------------------
+  // Derivativo
+  // -----------------------
+  float derivativo =
+    erro - erroAnterior;
+
+
+  // -----------------------
+  // Correção PID
+  // -----------------------
   float correcao =
     (Kp * proporcional) +
     (Ki * integral) +
@@ -240,7 +329,7 @@ void aplicarPID() {
 
 
   // =======================
-  // BOOST NAS CURVAS FORTES
+  // BOOST EM CURVAS FORTES
   // =======================
   if (erro >= 1.5) {
 
@@ -256,42 +345,91 @@ void aplicarPID() {
   // =======================
   // VELOCIDADE DOS MOTORES
   // =======================
-  int motorEsq = baseSpeed + correcao;
-  int motorDir = baseSpeed - correcao;
+
+  // Linha para direita:
+  // esquerdo acelera
+  // direito reduz
+
+  int motorEsq =
+    baseSpeed + correcao;
+
+  int motorDir =
+    baseSpeed - correcao;
 
 
-  motorEsq = constrain(motorEsq, 0, maxSpeed);
-  motorDir = constrain(motorDir, 0, maxSpeed);
+  // Limites
+  motorEsq = constrain(
+    motorEsq,
+    0,
+    maxSpeed
+  );
+
+  motorDir = constrain(
+    motorDir,
+    0,
+    maxSpeed
+  );
 
 
-  setMotors(motorEsq, motorDir);
+  // Envia para motores
+  setMotors(
+    motorEsq,
+    motorDir
+  );
 }
 
 
 // =====================================================
-// PROCURA A LINHA
+// BUSCA QUANDO PERDE A LINHA
 // =====================================================
 void procurarLinha() {
 
+  // Zera integral para evitar
+  // acúmulo durante a busca
   integral = 0;
 
 
+  // =======================
+  // LINHA ESTAVA À DIREITA
+  // =======================
   if (ultimoErroValido > 0) {
 
-    // Linha estava para direita
-    setMotors(searchSpeed, 0);
+    // Motor esquerdo anda
+    // Motor direito para
+
+    setMotors(
+      searchSpeed,
+      0
+    );
   }
 
+
+  // =======================
+  // LINHA ESTAVA À ESQUERDA
+  // =======================
   else if (ultimoErroValido < 0) {
 
-    // Linha estava para esquerda
-    setMotors(0, searchSpeed);
+    // Motor direito anda
+    // Motor esquerdo para
+
+    setMotors(
+      0,
+      searchSpeed
+    );
   }
 
+
+  // =======================
+  // NÃO SABE PARA ONDE IR
+  // =======================
   else {
 
-    // Não sabe onde estava
-    setMotors(searchSpeed, 0);
+    // Procura para direita
+
+    setMotors(
+      searchSpeed,
+      0
+    );
   }
 }
 
@@ -304,6 +442,7 @@ void setMotors(int velEsq, int velDir) {
   // =======================
   // MOTOR DIREITO
   // =======================
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
 
@@ -311,30 +450,40 @@ void setMotors(int velEsq, int velDir) {
   // =======================
   // MOTOR ESQUERDO
   // =======================
+
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, HIGH);
 
 
-  // ENA = direita
-  analogWrite(ENA, velDir);
+  // ENA = motor direito
+  analogWrite(
+    ENA,
+    velDir
+  );
 
-  // ENB = esquerda
-  analogWrite(ENB, velEsq);
+
+  // ENB = motor esquerdo
+  analogWrite(
+    ENB,
+    velEsq
+  );
 }
 
 
 // =====================================================
-// PARADA NORMAL - RODA LIVRE
+// PARADA NORMAL
 // =====================================================
 void stopMotors() {
 
+  // Desliga direção
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
 
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
 
-  // Desabilita a ponte
+
+  // Desabilita os motores
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
 }
@@ -348,27 +497,34 @@ void brakeMotors() {
   /*
      FREIO DINÂMICO
 
-     Em vez de desligar ENA e ENB,
-     deixamos a ponte H totalmente habilitada
-     e colocamos os dois terminais de cada
-     motor no mesmo estado.
+     Os dois terminais de cada motor ficam
+     no mesmo estado enquanto a ponte H
+     permanece habilitada.
 
-     Isso "curto-circuita" eletricamente o motor
-     através da ponte H, transformando sua própria
-     rotação em força de frenagem.
+     Isso cria resistência elétrica contra
+     a própria rotação do motor e reduz
+     bastante a inércia do robô.
   */
 
 
-  // Motor direito
+  // =======================
+  // MOTOR DIREITO
+  // =======================
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
 
-  // Motor esquerdo
+
+  // =======================
+  // MOTOR ESQUERDO
+  // =======================
+
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
 
 
-  // Ponte H 100% habilitada
+  // Mantém ponte habilitada
+  // para aplicar o freio
   analogWrite(ENA, 255);
   analogWrite(ENB, 255);
 }
